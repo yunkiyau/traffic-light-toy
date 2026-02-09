@@ -10,23 +10,35 @@
 #define I2C_SCL_PIN 5
 #define VL53L1X_ADDR 0x29
 
-static bool tof_ack_at_0x29(void) {
-    // Conservative I2C speed
+// Initialise I2C once
+static void i2c_setup(void) {
     i2c_init(I2C_PORT, 100 * 1000);
 
     gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
 
-    // Enable Pico internal pull-ups (safe even if breakout already has them)
+    // Safe to enable even if breakout already has pull-ups
     gpio_pull_up(I2C_SDA_PIN);
     gpio_pull_up(I2C_SCL_PIN);
 
-    sleep_ms(10); // allow bus/sensor to settle
+    sleep_ms(10); // allow bus + sensor to settle
+}
 
-    uint8_t dummy = 0;
-    int ret = i2c_read_blocking(I2C_PORT, VL53L1X_ADDR, &dummy, 1, false);
+// Read VL53L1X model ID register (0x010F)
+static bool vl53l1x_read_model_id(uint8_t *model_id) {
+    uint8_t reg_addr[2] = {0x01, 0x0F};
 
-    return (ret == 1);
+    // Write 16-bit register address, keep bus active
+    if (i2c_write_blocking(I2C_PORT, VL53L1X_ADDR, reg_addr, 2, true) != 2) {
+        return false;
+    }
+
+    // Read single byte from that register
+    if (i2c_read_blocking(I2C_PORT, VL53L1X_ADDR, model_id, 1, false) != 1) {
+        return false;
+    }
+
+    return true;
 }
 
 int main() {
@@ -41,24 +53,34 @@ int main() {
     gpio_init(RED_LED);
     gpio_set_dir(RED_LED, GPIO_OUT);
 
-    bool ack = tof_ack_at_0x29();
+    i2c_setup();
 
-    if (ack) {
-        // Sensor ACKed: all LEDs on solid
-        gpio_put(RED_LED, 1);
-        gpio_put(YELLOW_LED, 1);
+    uint8_t model_id = 0;
+    bool ok = vl53l1x_read_model_id(&model_id);
+
+    if (ok && model_id == 0xEA) {
+        // ✅ Correct model ID read
         gpio_put(GREEN_LED, 1);
+        gpio_put(YELLOW_LED, 1);
+        gpio_put(RED_LED, 0);
+    } 
+    else if (ok) {
+        // ⚠️ Register read worked, but ID unexpected
+        gpio_put(GREEN_LED, 1);
+        gpio_put(YELLOW_LED, 1);
+        gpio_put(RED_LED, 1);
+    } 
+    else {
+        // ❌ Register read failed
+        while (true) {
+            gpio_put(YELLOW_LED, 1);
+            sleep_ms(250);
+            gpio_put(YELLOW_LED, 0);
+            sleep_ms(250);
+        }
+    }
 
-        while (true) {
-            sleep_ms(1000);
-        }
-    } else {
-        // No ACK: blink red forever
-        while (true) {
-            gpio_put(RED_LED, 1);
-            sleep_ms(250);
-            gpio_put(RED_LED, 0);
-            sleep_ms(250);
-        }
+    while (true) {
+        sleep_ms(1000);
     }
 }
