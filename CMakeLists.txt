@@ -11,12 +11,12 @@ set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
 
 # Create the executable
-add_executable(ext_blink
+add_executable(LED_sensor_test
     src/main.c
 )
 
 # Link against the Pico standard library
-target_link_libraries(ext_blink pico_stdlib)
+target_link_libraries(LED_sensor_test pico_stdlib hardware_i2c)
 
 # Create UF2, ELF, etc.
-pico_add_extra_outputs(ext_blink)
+pico_add_extra_outputs(LED_sensor_test)
