@@ -1,86 +1,156 @@
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 
-#define GREEN_LED 16
+#include "VL53L1X_api.h"
+#include "VL53L1X_platform.h"
+
+#define GREEN_LED  16
 #define YELLOW_LED 18
-#define RED_LED 15
+#define RED_LED    15
 
 #define I2C_PORT i2c0
 #define I2C_SDA_PIN 4
 #define I2C_SCL_PIN 5
-#define VL53L1X_ADDR 0x29
 
-// Initialise I2C once
-static void i2c_setup(void) {
-    i2c_init(I2C_PORT, 100 * 1000);
+#define TOF_ADDR  0x29   // 7-bit address (matches your fixed platform.c)
 
-    gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
+// Hysteresis thresholds (mm)
+#define GREEN_ON_MM   145
+#define GREEN_OFF_MM  155
 
-    // Safe to enable even if breakout already has pull-ups
-    gpio_pull_up(I2C_SDA_PIN);
-    gpio_pull_up(I2C_SCL_PIN);
+// Only turn all LEDs off after this many consecutive invalid measurements
+#define INVALID_OFF_REQUIRED 5
 
-    sleep_ms(10); // allow bus + sensor to settle
+static void leds_init(void) {
+    gpio_init(RED_LED);    gpio_set_dir(RED_LED, GPIO_OUT);
+    gpio_init(YELLOW_LED); gpio_set_dir(YELLOW_LED, GPIO_OUT);
+    gpio_init(GREEN_LED);  gpio_set_dir(GREEN_LED, GPIO_OUT);
+    gpio_put(RED_LED, 0);
+    gpio_put(YELLOW_LED, 0);
+    gpio_put(GREEN_LED, 0);
 }
 
-// Read VL53L1X model ID register (0x010F)
-static bool vl53l1x_read_model_id(uint8_t *model_id) {
-    uint8_t reg_addr[2] = {0x01, 0x0F};
+static void set_leds(bool r, bool y, bool g) {
+    gpio_put(RED_LED, r ? 1 : 0);
+    gpio_put(YELLOW_LED, y ? 1 : 0);
+    gpio_put(GREEN_LED, g ? 1 : 0);
+}
 
-    // Write 16-bit register address, keep bus active
-    if (i2c_write_blocking(I2C_PORT, VL53L1X_ADDR, reg_addr, 2, true) != 2) {
-        return false;
+static void all_off(void) {
+    set_leds(false, false, false);
+}
+
+static void show_out_of_range_yellow(void) {
+    set_leds(false, true, false);   // yellow only
+}
+
+static void show_in_range_green(void) {
+    set_leds(false, false, true);   // green only
+}
+
+static void error_blink_red(void) {
+    while (true) {
+        gpio_put(RED_LED, 1); sleep_ms(200);
+        gpio_put(RED_LED, 0); sleep_ms(200);
     }
-
-    // Read single byte from that register
-    if (i2c_read_blocking(I2C_PORT, VL53L1X_ADDR, model_id, 1, false) != 1) {
-        return false;
-    }
-
-    return true;
 }
 
 int main() {
     stdio_init_all();
+    leds_init();
 
-    gpio_init(GREEN_LED);
-    gpio_set_dir(GREEN_LED, GPIO_OUT);
+    // Stage 0: firmware alive (1s red)
+    gpio_put(RED_LED, 1);
+    sleep_ms(1000);
+    gpio_put(RED_LED, 0);
 
-    gpio_init(YELLOW_LED);
-    gpio_set_dir(YELLOW_LED, GPIO_OUT);
+    // I2C init (safe even though platform also does it)
+    i2c_init(I2C_PORT, 100 * 1000);
+    gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_SDA_PIN);
+    gpio_pull_up(I2C_SCL_PIN);
+    sleep_ms(50);
 
-    gpio_init(RED_LED);
-    gpio_set_dir(RED_LED, GPIO_OUT);
+    uint16_t dev = TOF_ADDR;
 
-    i2c_setup();
+    // Wait for boot (blink yellow while waiting)
+    uint8_t booted = 0;
+    absolute_time_t boot_t0 = get_absolute_time();
+    while (!booted) {
+        gpio_put(YELLOW_LED, 1); sleep_ms(50);
+        gpio_put(YELLOW_LED, 0); sleep_ms(50);
 
-    uint8_t model_id = 0;
-    bool ok = vl53l1x_read_model_id(&model_id);
-
-    if (ok && model_id == 0xEA) {
-        // ✅ Correct model ID read
-        gpio_put(GREEN_LED, 1);
-        gpio_put(YELLOW_LED, 1);
-        gpio_put(RED_LED, 0);
-    } 
-    else if (ok) {
-        // ⚠️ Register read worked, but ID unexpected
-        gpio_put(GREEN_LED, 1);
-        gpio_put(YELLOW_LED, 1);
-        gpio_put(RED_LED, 1);
-    } 
-    else {
-        // ❌ Register read failed
-        while (true) {
-            gpio_put(YELLOW_LED, 1);
-            sleep_ms(250);
-            gpio_put(YELLOW_LED, 0);
-            sleep_ms(250);
-        }
+        if (VL53L1X_BootState(dev, &booted) != 0) error_blink_red();
+        if (absolute_time_diff_us(boot_t0, get_absolute_time()) > 3000000) error_blink_red();
     }
 
+    // Init + config
+    if (VL53L1X_SensorInit(dev) != 0) error_blink_red();
+    if (VL53L1X_SetDistanceMode(dev, 2) != 0) error_blink_red();          // 2 = long
+    if (VL53L1X_SetTimingBudgetInMs(dev, 200) != 0) error_blink_red();
+    if (VL53L1X_SetInterMeasurementInMs(dev, 220) != 0) error_blink_red();
+    if (VL53L1X_StartRanging(dev) != 0) error_blink_red();
+
+    // "Ready" indicator: all LEDs on for 1s
+    set_leds(true, true, true);
+    sleep_ms(1000);
+
+    // After startup: all LEDs OFF by default
+    all_off();
+
+    int invalid_streak = 0;
+    absolute_time_t first_data_t0 = get_absolute_time();
+
+    // Hysteresis state: remembers whether we're currently "in green"
+    bool green_state = false;
+
     while (true) {
-        sleep_ms(1000);
+        uint8_t ready = 0;
+        if (VL53L1X_CheckForDataReady(dev, &ready) != 0) error_blink_red();
+
+        if (!ready) {
+            // No new measurement yet -> keep last LED state (prevents cadence flicker)
+            if (absolute_time_diff_us(first_data_t0, get_absolute_time()) > 2000000) {
+                error_blink_red();
+            }
+            sleep_ms(5);
+            continue;
+        }
+
+        first_data_t0 = get_absolute_time();
+
+        uint16_t distance_mm = 0;
+        uint8_t rangeStatus = 0;
+
+        if (VL53L1X_GetDistance(dev, &distance_mm) != 0) error_blink_red();
+        if (VL53L1X_GetRangeStatus(dev, &rangeStatus) != 0) error_blink_red();
+        if (VL53L1X_ClearInterrupt(dev) != 0) error_blink_red();
+
+        // Only update LEDs on valid measurements.
+        // If invalid, only turn off after INVALID_OFF_REQUIRED consecutive invalids.
+        if (rangeStatus == 0) {
+            invalid_streak = 0;
+
+            // -------- HYSTERESIS --------
+            if (!green_state && distance_mm <= GREEN_ON_MM) {
+                green_state = true;
+            } else if (green_state && distance_mm >= GREEN_OFF_MM) {
+                green_state = false;
+            }
+
+            if (green_state) show_in_range_green();
+            else             show_out_of_range_yellow();
+
+        } else {
+            invalid_streak++;
+            if (invalid_streak >= INVALID_OFF_REQUIRED) {
+                all_off();
+                green_state = false;   // reset hysteresis state when we declare "no target"
+            }
+            // otherwise keep last LED state
+        }
+
+        sleep_ms(20);
     }
 }
