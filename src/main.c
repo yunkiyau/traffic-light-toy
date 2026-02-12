@@ -21,6 +21,9 @@
 // Only turn all LEDs off after this many consecutive invalid measurements
 #define INVALID_OFF_REQUIRED 5
 
+// Only enter green_state after this many consecutive "inside GREEN_ON_MM" reads
+#define GREEN_ON_REQUIRED 10
+
 static void leds_init(void) {
     gpio_init(RED_LED);    gpio_set_dir(RED_LED, GPIO_OUT);
     gpio_init(YELLOW_LED); gpio_set_dir(YELLOW_LED, GPIO_OUT);
@@ -105,6 +108,9 @@ int main() {
     // Hysteresis state: remembers whether we're currently "in green"
     bool green_state = false;
 
+    // New: require N consecutive <= GREEN_ON_MM to enter green_state
+    int green_on_streak = 0;
+
     while (true) {
         uint8_t ready = 0;
         if (VL53L1X_CheckForDataReady(dev, &ready) != 0) error_blink_red();
@@ -132,11 +138,22 @@ int main() {
         if (rangeStatus == 0) {
             invalid_streak = 0;
 
-            // -------- HYSTERESIS --------
-            if (!green_state && distance_mm <= GREEN_ON_MM) {
-                green_state = true;
-            } else if (green_state && distance_mm >= GREEN_OFF_MM) {
-                green_state = false;
+            // -------- GREEN-ENTRY STREAK + HYSTERESIS --------
+            if (!green_state) {
+                if (distance_mm <= GREEN_ON_MM) {
+                    green_on_streak++;
+                    if (green_on_streak >= GREEN_ON_REQUIRED) {
+                        green_state = true;
+                    }
+                } else {
+                    green_on_streak = 0; // must be consecutive inside threshold
+                }
+            } else {
+                // Once green, we use the OFF hysteresis threshold to leave green
+                if (distance_mm >= GREEN_OFF_MM) {
+                    green_state = false;
+                    green_on_streak = 0; // reset so re-entry still needs GREEN_ON_REQUIRED
+                }
             }
 
             if (green_state) show_in_range_green();
@@ -146,7 +163,8 @@ int main() {
             invalid_streak++;
             if (invalid_streak >= INVALID_OFF_REQUIRED) {
                 all_off();
-                green_state = false;   // reset hysteresis state when we declare "no target"
+                green_state = false;     // reset hysteresis state when we declare "no target"
+                green_on_streak = 0;     // also reset the entry streak
             }
             // otherwise keep last LED state
         }
