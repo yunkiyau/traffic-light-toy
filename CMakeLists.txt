@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
 
 # Create the executable
-add_executable(ranging_led_test15
+add_executable(traffic_light_final
     src/main.c
 
     lib/vl53l1x/src/VL53L1X_api.c
@@ -19,10 +19,10 @@ add_executable(ranging_led_test15
     lib/vl53l1x/src/VL53L1X_calibration.c
 )
 
-target_include_directories(ranging_led_test15 PRIVATE lib/vl53l1x/include)
+target_include_directories(traffic_light_final PRIVATE lib/vl53l1x/include)
 
 # Link against the Pico standard library
-target_link_libraries(ranging_led_test15 pico_stdlib hardware_i2c)
+target_link_libraries(traffic_light_final pico_stdlib hardware_i2c)
 
 # Create UF2, ELF, etc.
-pico_add_extra_outputs(ranging_led_test15)
+pico_add_extra_outputs(traffic_light_final)

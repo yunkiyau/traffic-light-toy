@@ -43,14 +43,6 @@ static void all_off(void) {
     set_leds(false, false, false);
 }
 
-static void show_out_of_range_yellow(void) {
-    set_leds(false, true, false);   // yellow only
-}
-
-static void show_in_range_green(void) {
-    set_leds(false, false, true);   // green only
-}
-
 static void error_blink_red(void) {
     while (true) {
         gpio_put(RED_LED, 1); sleep_ms(200);
@@ -58,8 +50,34 @@ static void error_blink_red(void) {
     }
 }
 
+// Run the requested sequence, ending with all LEDs OFF
+static void run_valid_sequence(void) {
+
+    // Random RED duration between 2–8 seconds
+    uint32_t red_duration_ms = (rand() % 6001) + 2000;  
+    // 0–6000 → +2000 gives 2000–8000 ms
+
+    // RED on random duration then off
+    set_leds(true, false, false);
+    sleep_ms(red_duration_ms);
+    all_off();
+
+    // YELLOW on 5s then off
+    set_leds(false, true, false);
+    sleep_ms(5000);
+    all_off();
+
+    // GREEN on 15s then off
+    set_leds(false, false, true);
+    sleep_ms(10000);
+    all_off();
+}
+
 int main() {
-    stdio_init_all();
+    
+    // Seed RNG using hardware timer
+    srand(to_us_since_boot(get_absolute_time()));
+
     leds_init();
 
     // Stage 0: firmware alive (1s red)
@@ -108,15 +126,18 @@ int main() {
     // Hysteresis state: remembers whether we're currently "in green"
     bool green_state = false;
 
-    // New: require N consecutive <= GREEN_ON_MM to enter green_state
+    // Require N consecutive <= GREEN_ON_MM to enter green_state
     int green_on_streak = 0;
+
+    // NEW: ensure we only run the sequence once per "green_state episode"
+    bool sequence_ran_this_episode = false;
 
     while (true) {
         uint8_t ready = 0;
         if (VL53L1X_CheckForDataReady(dev, &ready) != 0) error_blink_red();
 
         if (!ready) {
-            // No new measurement yet -> keep last LED state (prevents cadence flicker)
+            // No new measurement yet -> keep whatever LEDs are currently doing
             if (absolute_time_diff_us(first_data_t0, get_absolute_time()) > 2000000) {
                 error_blink_red();
             }
@@ -133,40 +154,59 @@ int main() {
         if (VL53L1X_GetRangeStatus(dev, &rangeStatus) != 0) error_blink_red();
         if (VL53L1X_ClearInterrupt(dev) != 0) error_blink_red();
 
-        // Only update LEDs on valid measurements.
-        // If invalid, only turn off after INVALID_OFF_REQUIRED consecutive invalids.
         if (rangeStatus == 0) {
             invalid_streak = 0;
 
-            // -------- GREEN-ENTRY STREAK + HYSTERESIS --------
+            // ----- GREEN-ENTRY STREAK + HYSTERESIS -----
             if (!green_state) {
                 if (distance_mm <= GREEN_ON_MM) {
                     green_on_streak++;
                     if (green_on_streak >= GREEN_ON_REQUIRED) {
                         green_state = true;
+                        sequence_ran_this_episode = false; // new episode starts now
                     }
                 } else {
-                    green_on_streak = 0; // must be consecutive inside threshold
+                    green_on_streak = 0;
                 }
             } else {
-                // Once green, we use the OFF hysteresis threshold to leave green
+                // Leave green only when >= GREEN_OFF_MM
                 if (distance_mm >= GREEN_OFF_MM) {
                     green_state = false;
-                    green_on_streak = 0; // reset so re-entry still needs GREEN_ON_REQUIRED
+                    green_on_streak = 0;
+                    sequence_ran_this_episode = false;
+                    all_off(); // while not green_state, stay OFF
                 }
             }
 
-            if (green_state) show_in_range_green();
-            else             show_out_of_range_yellow();
+            // NEW behavior:
+            // - If not green_state yet: all LEDs OFF (no yellow indicator).
+            // - On first time in green_state: run the sequence once, then OFF.
+            // - While still green_state after sequence: remain OFF until you exit green_state.
+            if (!green_state) {
+                all_off();
+            } else {
+                if (!sequence_ran_this_episode) {
+                    sequence_ran_this_episode = true;
+                    run_valid_sequence();          // ends OFF
+                    sequence_ran_this_episode = false; // allow repeat while still green_state
+                } else {
+                    all_off();
+                }
+
+            }
 
         } else {
+            // Invalid measurement: after N consecutive invalids, declare "no target" and go OFF
             invalid_streak++;
             if (invalid_streak >= INVALID_OFF_REQUIRED) {
                 all_off();
-                green_state = false;     // reset hysteresis state when we declare "no target"
-                green_on_streak = 0;     // also reset the entry streak
+                green_state = false;
+                green_on_streak = 0;
+                sequence_ran_this_episode = false;
+            } else {
+                // If you truly want OFF immediately on ANY invalid read, uncomment this:
+                // all_off();
             }
-            // otherwise keep last LED state
         }
 
         sleep_ms(20);
