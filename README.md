@@ -9,15 +9,21 @@ This toy simulates what it feels like to wait at a traffic light.
 When something is detected close to the sensor, it triggers a sequence:
 
 Red (random wait, like a real light)
+
 Yellow (short pause)
+
+
 Green (go)
 Then everything turns off again
 
 If nothing is detected, it just sits idle.
 
 # Hardware
+
 Raspberry Pi Pico (RP2040)
+
 VL53L1X distance sensor
+
 3 LEDs (red / yellow / green)
 
 # Notes
@@ -34,8 +40,11 @@ The core logic lives in main.c.
 # Build
 
 mkdir build
+
 cd build
+
 cmake ..
+
 make
 
 Flash the .uf2 file to the Pico.
