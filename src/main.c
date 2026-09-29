@@ -67,7 +67,7 @@ static void run_valid_sequence(void) {
     sleep_ms(5000);
     all_off();
 
-    // GREEN on 15s then off
+    // GREEN on 10s then off
     set_leds(false, false, true);
     sleep_ms(10000);
     all_off();
@@ -129,7 +129,7 @@ int main() {
     // Require N consecutive <= GREEN_ON_MM to enter green_state
     int green_on_streak = 0;
 
-    // NEW: ensure we only run the sequence once per "green_state episode"
+    // Reset the sequence flag after each run to allow repeats while near
     bool sequence_ran_this_episode = false;
 
     while (true) {
@@ -178,10 +178,11 @@ int main() {
                 }
             }
 
-            // NEW behavior:
+            // Sequence behavior:
             // - If not green_state yet: all LEDs OFF (no yellow indicator).
-            // - On first time in green_state: run the sequence once, then OFF.
-            // - While still green_state after sequence: remain OFF until you exit green_state.
+            // - In green_state: run the sequence, ending with all LEDs OFF.
+            // - After the next valid reading, repeat if still in green_state.
+            // - Sensor reads pause during the blocking sequence.
             if (!green_state) {
                 all_off();
             } else {
